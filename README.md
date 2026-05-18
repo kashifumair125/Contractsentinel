@@ -1,0 +1,223 @@
+# ContractSentinel 🛡️
+**Multi-Agent Contract Intelligence — AI Agent Olympics 2026**
+
+> Turn a 3-day legal review into 30 seconds using 5 specialized AI agents.
+
+---
+
+## What It Does
+
+ContractSentinel is a multi-agent system that analyzes enterprise contracts for risk, policy violations, and generates redlined rewrites — instantly.
+
+### The Agent Pipeline
+
+```
+PDF Upload
+    ↓
+Planner Agent (orchestrator)
+    ├── Agent 1: Clause Extractor   → Identifies all clauses by type        [Groq / LLaMA 3.3 70B]
+    ├── Agent 2: Policy Checker     → Flags enterprise policy violations     [Groq / LLaMA 3.3 70B] ─── parallel
+    ├── Agent 3: Risk Scorer        → Scores financial/legal exposure        [Groq / LLaMA 3.3 70B] ─── parallel
+    └── Agent 4: Redline Engine     → Rewrites risky clauses safely          [Gemini 2.0 Flash]
+    ↓
+Risk Dashboard + Redline Report
+```
+
+### Why dual LLMs?
+- **Groq (LLaMA 3.3 70B)** powers Agents 1–3: blazing fast, free, zero rate-limit issues for parallel calls
+- **Google Gemini 2.0 Flash** powers Agent 4 (Redline Engine): maintains Google prize eligibility, single focused call so no rate limits
+
+### Tech Stack
+- **Backend**: FastAPI (Python)
+- **AI — Reasoning**: Groq API (LLaMA 3.3 70B) — Agents 1, 2, 3
+- **AI — Redlines**: Google Gemini 2.0 Flash — Agent 4
+- **PDF Parsing**: pdfplumber
+- **Deployment**: Docker on Railway (free) or any VPS
+- **Frontend**: Vanilla HTML/CSS/JS (zero dependencies)
+
+---
+
+## Hackathon Tracks
+
+- ✅ **Collaborative Systems** — 4 specialized agents coordinated by a planner
+- ✅ **Enterprise Utility** — solves real legal review bottleneck for managers and procurement teams
+- ✅ **Agentic Workflows** — agents run in parallel with dependency management
+
+---
+
+## Local Setup
+
+### Prerequisites
+- Python 3.11+
+- **Groq API key** (free): https://console.groq.com → API Keys → Create
+- **Gemini API key** (free): https://aistudio.google.com → Get API Key
+
+### Run locally (Windows PowerShell)
+
+```powershell
+git clone https://github.com/YOUR_USERNAME/contractsentinel
+cd contractsentinel
+
+# Create virtual environment
+python -m venv .venv
+.venv\Scripts\Activate.ps1
+
+# Install dependencies
+pip install -r backend/requirements.txt
+
+# Set API keys
+$env:GROQ_API_KEY="your_groq_key_here"
+$env:GEMINI_API_KEY="your_gemini_key_here"
+
+# Copy frontend into static
+mkdir -p backend/static
+cp frontend/index.html backend/static/
+
+# Run
+cd backend
+uvicorn main:app --reload --port 8000
+```
+
+### Run locally (Mac/Linux)
+
+```bash
+git clone https://github.com/YOUR_USERNAME/contractsentinel
+cd contractsentinel
+
+python -m venv .venv
+source .venv/bin/activate
+
+pip install -r backend/requirements.txt
+
+export GROQ_API_KEY="your_groq_key_here"
+export GEMINI_API_KEY="your_gemini_key_here"
+
+mkdir -p backend/static
+cp frontend/index.html backend/static/
+
+cd backend
+uvicorn main:app --reload --port 8000
+```
+
+Open http://localhost:8000 — upload any contract PDF and watch the agents run.
+
+---
+
+## Deploy on Railway (Free — Recommended)
+
+Railway gives you a free public URL — perfect for the hackathon demo link.
+
+### Steps
+
+1. Push this repo to GitHub (make sure `.env` is in `.gitignore`)
+
+2. Go to https://railway.app → Login with GitHub
+
+3. Click **New Project → Deploy from GitHub repo** → select `contractsentinel`
+
+4. In **Variables** tab, add:
+   ```
+   GROQ_API_KEY = your_groq_key
+   GEMINI_API_KEY = your_gemini_key
+   ```
+
+5. Railway auto-detects the Dockerfile and builds
+
+6. Click **Generate Domain** → your public URL is ready
+
+Railway uses the `PORT` env variable automatically — the Dockerfile handles it.
+
+---
+
+## Deploy on VPS / Any Cloud
+
+```bash
+# SSH into your server, then:
+apt update && apt install -y docker.io docker-compose git
+
+git clone https://github.com/YOUR_USERNAME/contractsentinel
+cd contractsentinel
+
+mkdir -p backend/static
+cp frontend/index.html backend/static/
+
+# Set keys
+export GROQ_API_KEY="your_groq_key"
+export GEMINI_API_KEY="your_gemini_key"
+echo "GROQ_API_KEY=$GROQ_API_KEY" > .env
+echo "GEMINI_API_KEY=$GEMINI_API_KEY" >> .env
+
+docker-compose up -d --build
+```
+
+App live at `http://YOUR_SERVER_IP`
+
+---
+
+## Project Structure
+
+```
+contractsentinel/
+├── backend/
+│   ├── main.py              # FastAPI + all 5 agents (Groq + Gemini)
+│   ├── requirements.txt
+│   └── static/              # Copy frontend/index.html here before running
+├── frontend/
+│   └── index.html           # Full UI — dark legal-tech design
+├── Dockerfile               # PORT-aware for Railway/any cloud
+├── docker-compose.yml
+└── README.md
+```
+
+---
+
+## Environment Variables
+
+| Variable | Required | Where to get |
+|----------|----------|--------------|
+| `GROQ_API_KEY` | ✅ Yes | https://console.groq.com |
+| `GEMINI_API_KEY` | ✅ Yes | https://aistudio.google.com |
+
+---
+
+## API Endpoints
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | `/health` | Check API + key status |
+| POST | `/analyze` | Upload PDF → full agent analysis |
+
+---
+
+## Demo Script (60 seconds)
+
+1. Open the live URL
+2. Upload a sample contract PDF
+3. Click **Run Agent Analysis**
+4. Show 4 agents firing — visible in the UI pipeline
+5. Show the Risk Score + Executive Summary
+6. Click a red HIGH-risk clause → see reasoning
+7. Show redlined suggestions side-by-side (original vs suggested)
+8. Close: *"ContractSentinel turns a 3-day legal review into 30 seconds"*
+
+### Sample Contracts for Demo
+- https://www.docracy.com/
+- https://www.lawinsider.com/
+- Search: "sample NDA PDF" or "sample SaaS agreement PDF"
+
+---
+
+## Submission Checklist
+
+- [ ] GitHub repo is public with this README
+- [ ] `GROQ_API_KEY` and `GEMINI_API_KEY` set in Railway Variables
+- [ ] Public demo URL working (Railway domain)
+- [ ] `/health` returns `groq_configured: true, gemini_configured: true`
+- [ ] Demo video recorded (Loom, 60–90 seconds)
+- [ ] Submitted on lablab.ai before May 19 deadline
+
+---
+
+## Built By
+
+Kashif — AI Agent Olympics 2026 | Milan AI Week
