@@ -1,7 +1,0 @@
-__pycache__/
-*.pyc
-.env
-backend/static/
-*.egg-info/
-dist/
-.DS_Store
