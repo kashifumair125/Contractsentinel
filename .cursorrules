@@ -1,0 +1,61 @@
+# ContractSentinel — Cursor Rules
+# Multi-agent enterprise contract intelligence system
+# github.com/kashifumair125/Contractsentinel
+
+## What this project does
+Analyzes enterprise contracts (NDA, SaaS, employment) using 5 coordinated AI agents.
+Extracts clauses, checks policy violations, scores financial/legal risk, and generates
+redlined rewrites. Deployed live on Railway.
+
+## Agent architecture
+Planner Agent (orchestrator) coordinates:
+  Agent 1: Clause Extractor   — pdfplumber + Groq LLaMA 3.3 70B
+  Agent 2: Policy Checker     — Groq LLaMA 3.3 70B  ┐ parallel via asyncio.gather()
+  Agent 3: Risk Scorer        — Groq LLaMA 3.3 70B  ┘
+  Agent 4: Redline Engine     — Gemini 2.0 Flash (single focused call)
+
+## File structure
+backend/main.py          — FastAPI app + all 5 agents
+backend/requirements.txt — pinned dependencies
+frontend/index.html      — full UI (vanilla HTML/CSS/JS, dark legal-tech theme)
+Dockerfile               — PORT-aware, Railway-compatible
+docker-compose.yml       — local dev
+
+## Code rules
+- All LLM calls use structured JSON output — never free-form
+- Every agent prompt includes: explicit output schema + filled example + "Return ONLY valid JSON"
+- Agents 2 and 3 MUST run via asyncio.gather() — never sequential
+- Agent 4 (Gemini) uses google-generativeai SDK — never openai client
+- All API keys from environment variables only — GROQ_API_KEY, GEMINI_API_KEY
+- FastAPI endpoints are async — no sync route handlers
+- Pydantic models for all agent I/O — never raw dicts
+
+## Error handling rules
+- Each agent wrapped in try/except with graceful degradation
+- Pipeline does not crash if one agent fails — return partial results with error field
+- Groq calls get exponential backoff retry (max 3 attempts)
+- pdfplumber failures fall back to raw text extraction before raising
+
+## Prompt engineering conventions
+- System prompts are f-strings in main.py — do not split into external files
+- Few-shot examples included in every structured output prompt
+- Confidence threshold required for Policy Checker: "only flag if >80% confident"
+- Gemini redline prompt: "Return raw text only. No markdown. No bullet points."
+
+## What NOT to do
+- Do not make agents 2 and 3 sequential — this breaks the parallel performance benchmark
+- Do not hardcode PORT in Dockerfile CMD — use $PORT for Railway compatibility
+- Do not use OpenAI SDK anywhere — Groq uses its own client, Gemini uses google-generativeai
+- Do not add streaming to /analyze — batch response only, frontend polls /health
+- Do not commit .env or any file containing GROQ_API_KEY or GEMINI_API_KEY
+
+## Running locally
+export GROQ_API_KEY="your_key"
+export GEMINI_API_KEY="your_key"
+cp frontend/index.html backend/static/
+cd backend && uvicorn main:app --reload --port 8000
+
+## Live deployment
+Railway: contractsentinel-production-9f50.up.railway.app
+/health — returns groq_configured and gemini_configured status
+/analyze — POST with PDF file, returns full agent report
