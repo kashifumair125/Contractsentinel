@@ -466,6 +466,25 @@
       .pipeline-row { grid-template-columns:repeat(2,1fr); }
       .detail-grid { grid-template-columns:1fr 1fr; }
     }
+
+    .search-box input {
+  width: 240px;
+  height: 34px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  padding: 0 14px;
+  font-size: 13px;
+  font-family: var(--body);
+  color: var(--text);
+  outline: none;
+}
+
+.search-box input:focus {
+  border-color: var(--orange);
+  box-shadow: 0 0 0 3px rgba(249,115,22,0.1);
+}
+
   </style>
 </head>
 <body>
@@ -482,17 +501,31 @@
       <div class="nav-logo-text">Contract<span>Sentinel</span></div>
     </div>
     <div class="nav-tabs">
-      <button class="nav-tab active">Command</button>
-      <button class="nav-tab">Clauses</button>
-      <button class="nav-tab">Redlines</button>
-      <button class="nav-tab">Reports</button>
-    </div>
+  <button class="nav-tab active" data-target="uploadSection">Command</button>
+  <button class="nav-tab" data-target="clausesSection">Clauses</button>
+  <button class="nav-tab" data-target="redlinesSection">Redlines</button>
+  <button class="nav-tab" data-target="reportsSection">Reports</button>
+</div>
   </div>
   <div class="nav-right">
-    <div class="nav-icon-btn"><svg width="16" height="16" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><path stroke-linecap="round" d="M21 21l-4.35-4.35"/></svg></div>
-    <div class="nav-icon-btn"><svg width="16" height="16" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" d="M15 17h5l-1.405-1.405A2.032 2.032 0 0118 14.158V11a6.002 6.002 0 00-4-5.659V5a2 2 0 10-4 0v.341C7.67 6.165 6 8.388 6 11v3.159c0 .538-.214 1.055-.595 1.436L4 17h5m6 0v1a3 3 0 11-6 0v-1m6 0H9"/></svg></div>
-    <div class="nav-avatar">K</div>
+
+  <div class="search-box">
+    <input
+      type="text"
+      id="searchInput"
+      placeholder="Search clauses, risks, redlines..."
+    />
   </div>
+
+  <div class="nav-icon-btn">
+    <svg width="16" height="16" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+      <path stroke-linecap="round" d="M15 17h5l-1.405-1.405A2.032 2.032 0 0118 14.158V11a6.002 6.002 0 00-4-5.659V5a2 2 0 10-4 0v.341C7.67 6.165 6 8.388 6 11v3.159c0 .538-.214 1.055-.595 1.436L4 17h5m6 0v1a3 3 0 11-6 0v-1m6 0H9"/>
+    </svg>
+  </div>
+
+  <div class="nav-avatar">K</div>
+
+</div>
 </nav>
 
 <div class="app">
@@ -651,7 +684,7 @@
           </div>
           <div class="risk-mini-stats" id="riskMiniStats"></div>
         </div>
-        <div class="summary-panel">
+        <div class="summary-panel" id="reportsSection">
           <div class="panel-header">
             <div class="panel-title">Executive Summary</div>
             <div class="panel-date" id="analysisDate"></div>
@@ -662,7 +695,7 @@
       </div>
 
       <!-- CLAUSES TABLE -->
-      <div class="table-card">
+      <div class="table-card" id="clausesSection">
         <div class="table-header">
           <div class="table-title">Contract Clauses</div>
           <div class="table-count" id="clauseCount">0 clauses</div>
@@ -682,7 +715,9 @@
         <div class="table-title">Suggested Redlines</div>
         <div class="table-count" id="redlineCount">0 redlines</div>
       </div>
-      <div class="redlines-grid" id="redlinesList"></div>
+      <div id="redlinesSection">
+  <div class="redlines-grid" id="redlinesList"></div>
+</div>
 
       <button class="reset-btn" id="resetBtn">
         <svg width="13" height="13" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M16.023 9.348h4.992v-.001M2.985 19.644v-4.992m0 0h4.992m-4.993 0l3.181 3.183a8.25 8.25 0 0013.803-3.7M4.031 9.865a8.25 8.25 0 0113.803-3.7l3.181 3.182m0-4.991v4.99"/></svg>
@@ -815,7 +850,7 @@
     document.getElementById('statsRow').innerHTML = `
       <div class="stat-card">
         <div class="stat-card-top">
-          <div class="stat-card-icon" style="background:var(--red-soft)">⚠️</div>
+          <div class="stat-card-icon" style="background:var(--red-soft)">🔴</div>
           <span class="stat-card-label">High Risk Clauses</span>
         </div>
         <div class="stat-card-value" style="color:var(--red)">${highCount}</div>
@@ -823,7 +858,7 @@
       </div>
       <div class="stat-card">
         <div class="stat-card-top">
-          <div class="stat-card-icon" style="background:var(--yellow-soft)">🔍</div>
+          <div class="stat-card-icon" style="background:var(--yellow-soft)">🟡</div>
           <span class="stat-card-label">Policy Violations</span>
         </div>
         <div class="stat-card-value" style="color:var(--yellow)">${policies.filter(p=>!p.compliant).length}</div>
@@ -831,7 +866,7 @@
       </div>
       <div class="stat-card">
         <div class="stat-card-top">
-          <div class="stat-card-icon" style="background:rgba(249,115,22,0.1)">✏️</div>
+          <div class="stat-card-icon" style="background:rgba(249,115,22,0.1)">🟠</div>
           <span class="stat-card-label">Redlines Generated</span>
         </div>
         <div class="stat-card-value" style="color:var(--orange)">${redlineCount}</div>
@@ -839,7 +874,7 @@
       </div>
       <div class="stat-card">
         <div class="stat-card-top">
-          <div class="stat-card-icon" style="background:var(--green-soft)">✅</div>
+          <div class="stat-card-icon" style="background:var(--green-soft)">🟢</div>
           <span class="stat-card-label">Auto-Approved</span>
         </div>
         <div class="stat-card-value" style="color:var(--green)">${risks.filter(r=>r.risk_level==='LOW').length}</div>
@@ -939,6 +974,45 @@
 
   function showError(msg) { errorPill.textContent = msg; errorPill.style.display = 'block'; }
   function hideError() { errorPill.style.display = 'none'; }
+  document.querySelectorAll('.nav-tab').forEach(tab => {
+  tab.addEventListener('click', () => {
+
+    document.querySelectorAll('.nav-tab')
+      .forEach(t => t.classList.remove('active'));
+
+    tab.classList.add('active');
+
+    const targetId = tab.dataset.target;
+    const section = document.getElementById(targetId);
+
+    if (section) {
+      section.scrollIntoView({
+        behavior: 'smooth',
+        block: 'start'
+      });
+    }
+  });
+});
+
+document.getElementById('searchInput')
+  .addEventListener('input', function () {
+
+    const q = this.value.toLowerCase();
+
+    document.querySelectorAll('.clause-row').forEach(row => {
+      const text = row.innerText.toLowerCase();
+
+      row.style.display =
+        text.includes(q) ? 'grid' : 'none';
+    });
+
+    document.querySelectorAll('.redline-card').forEach(card => {
+      const text = card.innerText.toLowerCase();
+
+      card.style.display =
+        text.includes(q) ? 'block' : 'none';
+    });
+});
 </script>
 </body>
 </html>

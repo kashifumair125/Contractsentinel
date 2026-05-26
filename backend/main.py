@@ -1,6 +1,7 @@
 import os
 import json
 import asyncio
+import re
 from fastapi import FastAPI, UploadFile, File, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
@@ -8,7 +9,60 @@ from fastapi.staticfiles import StaticFiles
 import httpx
 import pdfplumber
 import tempfile
+import time
+start = time.time()
 
+# ─────────────────────────────────────────
+# JSON PARSER
+# ─────────────────────────────────────────
+def safe_json_parse(text: str):
+    try:
+        clean = text.strip().replace("```json", "").replace("```", "")
+        # Attempt repair for unescaped quotes
+        clean = clean.replace('"AS IS"', '\\"AS IS\\"')
+        clean = clean.replace('"AS AVAILABLE"', '\\"AS AVAILABLE\\"')
+        
+        # Try object first
+        match = re.search(r'\{.*\}', clean, re.DOTALL)
+        if match:
+            return json.loads(match.group())
+        
+        # Fallback: try array and wrap it
+        arr_match = re.search(r'\[.*\]', clean, re.DOTALL)
+        if arr_match:
+            arr = json.loads(arr_match.group())
+            # Wrap array into expected object shape
+            if arr and isinstance(arr, list):
+                first_key = list(arr[0].keys())[0] if arr else None
+                if first_key and 'clause' in first_key:
+                    return {"clauses": arr}
+                elif first_key and 'policy' in first_key:
+                    return {"policy_checks": arr}
+                elif first_key and 'risk' in first_key:
+                    return {"risk_scores": arr}
+                elif first_key and 'redline' in first_key:
+                    return {"redlines": arr}
+        
+        raise ValueError("No JSON found")
+    except Exception as e:
+        print("\n===== JSON PARSE ERROR =====")
+        print(str(e))
+        print("\n===== RAW MODEL OUTPUT =====")
+        print(text)
+        print("============================\n")
+        print(f"Analysis completed in {time.time() - start:.2f}s")
+        return None
+    
+    
+def compact_clauses(clauses):
+    return [
+        {
+            "id": c.get("id"),
+            "type": c.get("type"),
+            "text": c.get("text", "")[:300]
+        }
+        for c in clauses
+    ]
 app = FastAPI(title="ContractSentinel API", version="2.0.0")
 
 app.add_middleware(
@@ -18,57 +72,90 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
-GROQ_URL = "https://api.groq.com/openai/v1/chat/completions"
-GEMINI_FLASH_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent"
+# ─────────────────────────────────────────
+# API KEYS + ENDPOINTS
+# ─────────────────────────────────────────
+CEREBRAS_API_KEY = os.getenv("CEREBRAS_API_KEY", "")
+GROQ_API_KEY     = os.getenv("GROQ_API_KEY", "")
+
+CEREBRAS_URL = "https://api.cerebras.ai/v1/chat/completions"
+GROQ_URL     = "https://api.groq.com/openai/v1/chat/completions"
 
 
+# ─────────────────────────────────────────
+# CEREBRAS CALLER — Agents 1 & 2
+# llama-3.3-70b, high TPM, very fast
+# ─────────────────────────────────────────
+async def call_cerebras(prompt: str) -> str:
+    payload = {
+        "model": "llama3.1-8b",
+        "messages": [{"role": "user", "content": prompt}],
+        "temperature": 0.1,
+        "max_tokens": 2000,
+    }
+    async with httpx.AsyncClient(timeout=90.0) as client:
+        resp = await client.post(
+            CEREBRAS_URL,
+            headers={
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {CEREBRAS_API_KEY}",
+            },
+            json=payload,
+        )
+        if not resp.is_success:
+            raise HTTPException(
+                status_code=resp.status_code,
+                detail=f"Cerebras error {resp.status_code}: {resp.text}"
+            )
+            
+        return resp.json()["choices"][0]["message"]["content"]
+
+
+# ─────────────────────────────────────────
+# GROQ CALLER — Agents 3 & 4
+# llama-3.3-70b-versatile, sequential calls
+# ─────────────────────────────────────────
 async def call_groq(prompt: str) -> str:
+    await asyncio.sleep(1)  # stay under TPM limit
     payload = {
         "model": "llama-3.3-70b-versatile",
         "messages": [{"role": "user", "content": prompt}],
         "temperature": 0.1,
-        "max_tokens": 3000,
+        "max_tokens": 2000,
     }
     async with httpx.AsyncClient(timeout=90.0) as client:
         resp = await client.post(
             GROQ_URL,
-            headers={"Content-Type": "application/json", "Authorization": f"Bearer {GROQ_API_KEY}"},
+            headers={
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {GROQ_API_KEY}",
+            },
             json=payload,
         )
-        resp.raise_for_status()
+        if resp.status_code == 429:
+            print("Groq rate limit hit. Waiting 45s...")
+            await asyncio.sleep(45)
+            return await call_groq(prompt)
+
+        if not resp.is_success:
+            raise HTTPException(
+                status_code=resp.status_code,
+                detail=f"Groq error {resp.status_code}: {resp.text}"
+            )
         return resp.json()["choices"][0]["message"]["content"]
 
-
-async def call_gemini_flash(prompt: str) -> str:
-    payload = {
-        "contents": [{"parts": [{"text": prompt}]}],
-        "generationConfig": {"temperature": 0.1, "maxOutputTokens": 3000},
-    }
-    async with httpx.AsyncClient(timeout=90.0) as client:
-        for attempt in range(4):
-            resp = await client.post(
-                f"{GEMINI_FLASH_URL}?key={GEMINI_API_KEY}",
-                headers={"Content-Type": "application/json"},
-                json=payload,
-            )
-            if resp.status_code == 429:
-                await asyncio.sleep(2 ** attempt)
-                continue
-            resp.raise_for_status()
-            return resp.json()["candidates"][0]["content"]["parts"][0]["text"]
-    raise HTTPException(status_code=429, detail="Gemini rate limit exceeded.")
-
-
 # ─────────────────────────────────────────
-# AGENT 1 — Clause Extractor (Groq)
+# AGENT 1 — Clause Extractor (Cerebras)
 # ─────────────────────────────────────────
 async def agent_clause_extractor(contract_text: str) -> dict:
     prompt = f"""You are a senior legal analyst extracting contract clauses. Be SPECIFIC — quote exact language, never be vague.
+    IMPORTANT:
+- Escape all internal quotation marks inside JSON strings using \"
+- Return strictly valid JSON parsable by json.loads()
+- Do not include trailing commas
 
 CONTRACT TEXT:
-{contract_text[:8000]}
+{contract_text[:5000]}
 
 Return ONLY valid JSON, no markdown:
 {{
@@ -86,27 +173,49 @@ Return ONLY valid JSON, no markdown:
 }}
 
 Rules:
-- "text" must quote or closely paraphrase actual contract language. NEVER write "this clause may pose some risk".
+- "text" must quote or closely paraphrase actual contract language.
 - "key_snippet" is the single most legally significant sentence, verbatim if possible.
-- "clause_confidence" is 0-100, how confident you are in the clause type classification.
-- Extract ALL clauses: Payment Terms, Intellectual Property, Liability/Indemnification, Termination, Confidentiality, Non-Compete, Dispute Resolution, Warranty, Governing Law, Force Majeure, Data Privacy, SLA, Audit Rights, and any others present."""
+- "clause_confidence" is 0-100.
+- - Extract ONLY the 10 most legally significant clauses.
+- Prioritize these clause categories:
+  Payment Terms,
+  Intellectual Property,
+  Liability/Indemnification,
+  Termination,
+  Confidentiality,
+  Non-Compete,
+  Dispute Resolution,
+  Warranty,
+  Governing Law,
+  Force Majeure,
+  Data Privacy,
+  SLA,
+  Audit Rights.
+- If multiple clauses are similar, keep only the most important one.
+"""
 
-    result = await call_groq(prompt)
-    try:
-        clean = result.strip().replace("```json", "").replace("```", "").strip()
-        return json.loads(clean)
-    except:
-        return {"clauses": [], "error": "Extraction failed"}
+    result = await call_cerebras(prompt)
+    parsed = safe_json_parse(result)
+    print(f"Analysis completed in {time.time() - start:.2f}s")
+    return parsed if parsed else {"clauses": [], "error": "Extraction failed"}
 
+    
 
 # ─────────────────────────────────────────
-# AGENT 2 — Policy Checker (Groq)
+# AGENT 2 — Policy Checker (Cerebras)
 # ─────────────────────────────────────────
 async def agent_policy_checker(clauses: list) -> dict:
-    prompt = f"""You are an enterprise legal compliance officer. Check each clause against enterprise policy standards. Be specific about what exactly violates policy.
+    prompt = f"""You are an enterprise legal compliance officer. Check each clause against enterprise policy standards.
+    IMPORTANT:
+- Escape all internal quotation marks inside JSON strings using \"
+- Return strictly valid JSON parsable by json.loads()
+- Do not include trailing commas
 
 CLAUSES:
-{json.dumps(clauses, indent=2)}
+{json.dumps(compact_clauses(clauses), indent=2)}
+    
+    
+    
 
 Enterprise policy standards:
 - Payment: Net-30 or better; late payment interest must be defined
@@ -132,24 +241,26 @@ Return ONLY valid JSON, no markdown:
   ]
 }}
 
-severity must be: CRITICAL, MAJOR, or MINOR. Only use null for "issue" if fully compliant."""
+severity must be: CRITICAL, MAJOR, or MINOR. Only use null for issue if fully compliant."""
 
-    result = await call_groq(prompt)
-    try:
-        clean = result.strip().replace("```json", "").replace("```", "").strip()
-        return json.loads(clean)
-    except:
-        return {"policy_checks": []}
+    result = await call_cerebras(prompt)
+    parsed = safe_json_parse(result)
+    print(f"Analysis completed in {time.time() - start:.2f}s")
+    return parsed if parsed else {"policy_checks": []}
 
 
 # ─────────────────────────────────────────
 # AGENT 3 — Risk Scorer (Groq)
 # ─────────────────────────────────────────
 async def agent_risk_scorer(clauses: list, policy_checks: list) -> dict:
-    prompt = f"""You are a contract risk analyst. Score each clause with SPECIFIC, contract-aware reasoning. Never write generic phrases like "may pose some risk".
+    prompt = f"""You are a contract risk analyst. Score each clause with SPECIFIC, contract-aware reasoning.
+    IMPORTANT:
+- Escape all internal quotation marks inside JSON strings using \"
+- Return strictly valid JSON parsable by json.loads()
+- Do not include trailing commas
 
 CLAUSES:
-{json.dumps(clauses, indent=2)}
+{json.dumps(compact_clauses(clauses), indent=2)}
 
 POLICY VIOLATIONS FOUND:
 {json.dumps(policy_checks, indent=2)}
@@ -162,96 +273,88 @@ Return ONLY valid JSON, no markdown:
       "risk_level": "HIGH",
       "risk_score": 87,
       "risk_confidence": 91,
-      "reasoning": "Vendor retains exclusive ownership of derivative works. Client loses rights to improvements built on their own data and workflows.",
+      "reasoning": "Specific reasoning about this clause's risk based on actual contract language.",
       "business_impact_type": "IP Ownership Risk",
-      "business_impact_detail": "Client cannot reuse or migrate AI models trained on their data if they switch vendors.",
+      "business_impact_detail": "Specific business consequence if this clause is not addressed.",
       "human_review": "REQUIRED",
       "review_label": "Requires legal review"
     }}
   ],
   "overall_risk": "HIGH",
   "overall_score": 74,
-  "summary": "This contract presents HIGH risk primarily due to vendor-retained IP ownership of derivative works and an uncapped liability clause that excludes indirect damages including data loss. The termination notice period of 90 days significantly favors the vendor."
+  "summary": "Specific 2-3 sentence executive summary referencing actual contract terms."
 }}
 
 Rules:
 - risk_level: LOW, MEDIUM, or HIGH
 - risk_score: 0-100
-- risk_confidence: 0-100 (how confident you are in this risk assessment)
-- business_impact_type must be one of: Financial Exposure, IP Ownership Risk, Vendor Lock-In Risk, Compliance Risk, Operational Risk, Data Privacy Risk, Reputational Risk
-- human_review: "REQUIRED" for HIGH, "RECOMMENDED" for MEDIUM, "NOT_REQUIRED" for LOW
+- risk_confidence: 0-100
+- business_impact_type: Financial Exposure, IP Ownership Risk, Vendor Lock-In Risk, Compliance Risk, Operational Risk, Data Privacy Risk, or Reputational Risk
+- human_review: REQUIRED for HIGH, RECOMMENDED for MEDIUM, NOT_REQUIRED for LOW
 - review_label: "Requires legal review" / "Recommended review" / "Auto-approved"
-- reasoning and summary must be SPECIFIC to this contract's actual language — no generic phrases"""
+- Never write generic phrases like "may pose some risk" """
 
     result = await call_groq(prompt)
-    try:
-        clean = result.strip().replace("```json", "").replace("```", "").strip()
-        return json.loads(clean)
-    except:
-        return {"risk_scores": [], "overall_risk": "UNKNOWN", "overall_score": 0, "summary": ""}
+    parsed = safe_json_parse(result)
+    print(f"Risk scoring completed in {time.time() - start:.2f}s")
+    return parsed if parsed else {"risk_scores": [], "overall_risk": "UNKNOWN", "overall_score": 0, "summary": ""}
 
 
 # ─────────────────────────────────────────
-# AGENT 4 — Redline Engine (Gemini Flash)
-# ALWAYS generates redlines for HIGH + MEDIUM
+# AGENT 4 — Redline Engine (Groq)
+# Always generates redlines for HIGH + MEDIUM
 # ─────────────────────────────────────────
 async def agent_redline_suggester(clauses: list, risk_scores: list, policy_checks: list) -> dict:
-    # Always redline HIGH and MEDIUM — never return 0 redlines if any exist
     redline_ids = {r["clause_id"] for r in risk_scores if r.get("risk_level") in ["HIGH", "MEDIUM"]}
     risky_clauses = [c for c in clauses if c["id"] in redline_ids]
 
-    # If somehow nothing is HIGH/MEDIUM, redline everything as a fallback
     if not risky_clauses:
         risky_clauses = clauses[:5]
 
-    policy_map = {p["clause_id"]: p for p in policy_checks}
     risk_map = {r["clause_id"]: r for r in risk_scores}
 
-    prompt = f"""You are a senior contract attorney protecting enterprise clients. You MUST suggest redlined improvements for every clause provided. Never skip a clause.
+    prompt = f"""You are a senior contract attorney. Suggest redlined improvements for EVERY clause below. Never skip one.
+    IMPORTANT:
+- Escape all internal quotation marks inside JSON strings using \"
+- Return strictly valid JSON parsable by json.loads()
+- Do not include trailing commas
 
 CLAUSES TO REDLINE:
-{json.dumps(risky_clauses, indent=2)}
+{json.dumps(compact_clauses(risky_clauses), indent=2)}
 
 POLICY VIOLATIONS:
 {json.dumps(policy_checks, indent=2)}
-
-For each clause, provide specific, legally precise redline language. Your suggestions must:
-1. Be concrete legal text, not general advice
-2. Directly address the specific risk identified
-3. Use standard enterprise contract language
 
 Return ONLY valid JSON, no markdown:
 {{
   "redlines": [
     {{
       "clause_id": "clause_1",
-      "risk_trigger": "Vendor retains exclusive ownership of derivative works built on client data",
-      "policy_violated": "Enterprise IP Policy §3.1 — all derivatives must vest with client",
-      "original": "All improvements, modifications, and derivative works shall remain the sole and exclusive property of Vendor.",
-      "suggested": "All improvements, modifications, and derivative works created using Client data, systems, or specifications shall vest exclusively in Client upon creation. Vendor retains no rights in such derivative works without Client's prior written consent.",
-      "negotiation_tip": "If vendor resists, propose a joint IP ownership clause with exclusive license to client for their domain.",
+      "risk_trigger": "Specific risk found in this clause",
+      "policy_violated": "Which policy this violates",
+      "original": "The original problematic language from the contract",
+      "suggested": "Your improved protective legal language",
+      "negotiation_tip": "Practical advice for negotiating this change with the vendor.",
       "redline_confidence": 88
     }}
   ]
 }}
 
-redline_confidence: 0-100, how confident you are this redline will hold up in negotiation."""
+redline_confidence: 0-100. Every clause in the input MUST have a redline in the output."""
 
-    result = await call_gemini_flash(prompt)
-    try:
-        clean = result.strip().replace("```json", "").replace("```", "").strip()
-        parsed = json.loads(clean)
-        # Final safety net — if Gemini still returns empty, generate basic redlines
-        if not parsed.get("redlines"):
-            parsed["redlines"] = _fallback_redlines(risky_clauses, risk_map)
-        return parsed
-    except:
+    result = await call_groq(prompt)
+    parsed = safe_json_parse(result)
+    print(f"Redline suggestions completed in {time.time() - start:.2f}s")
+    if not parsed:
         return {"redlines": _fallback_redlines(risky_clauses, risk_map)}
+
+    if not parsed.get("redlines"):
+        parsed["redlines"] = _fallback_redlines(risky_clauses, risk_map)
+
+    return parsed
 
 
 def _fallback_redlines(clauses: list, risk_map: dict) -> list:
-    """Safety net: always produce at least basic redlines"""
-    redlines = []
     templates = {
         "Intellectual Property": {
             "original": "Vendor retains all intellectual property rights.",
@@ -274,11 +377,12 @@ def _fallback_redlines(clauses: list, risk_map: dict) -> list:
             "tip": "Always define dispute resolution for invoice disagreements."
         },
     }
+    redlines = []
     for clause in clauses[:5]:
         ctype = clause.get("type", "")
         tmpl = templates.get(ctype, {
             "original": clause.get("text", "Original clause language."),
-            "suggested": "Add specific protective language addressing the identified risk. Consult legal counsel for jurisdiction-specific requirements.",
+            "suggested": "Add specific protective language addressing the identified risk.",
             "tip": "Have your legal team review this clause before signing."
         })
         redlines.append({
@@ -297,18 +401,19 @@ def _fallback_redlines(clauses: list, risk_map: dict) -> list:
 # PLANNER AGENT
 # ─────────────────────────────────────────
 async def planner_agent(contract_text: str) -> dict:
+    # Agents 1 & 2 on Cerebras — can run parallel, high TPM
     extraction_result = await agent_clause_extractor(contract_text)
     clauses = extraction_result.get("clauses", [])
 
     if not clauses:
         raise HTTPException(status_code=422, detail="Could not extract clauses from contract")
 
-    policy_result, risk_result = await asyncio.gather(
-        agent_policy_checker(clauses),
-        agent_risk_scorer(clauses, [])
-    )
-
+    # Policy check on Cerebras (fast, no rate limit)
+    policy_result = await agent_policy_checker(clauses)
     policy_checks = policy_result.get("policy_checks", [])
+
+    # Agents 3 & 4 on Groq — sequential with sleep to stay under TPM
+    risk_result = await agent_risk_scorer(clauses, policy_checks)
     risk_scores = risk_result.get("risk_scores", [])
 
     redline_result = await agent_redline_suggester(clauses, risk_scores, policy_checks)
@@ -324,22 +429,25 @@ async def planner_agent(contract_text: str) -> dict:
     }
 
 
+# ─────────────────────────────────────────
+# ROUTES
+# ─────────────────────────────────────────
 @app.get("/health")
 async def health():
     return {
         "status": "healthy",
+        "cerebras_configured": bool(CEREBRAS_API_KEY),
         "groq_configured": bool(GROQ_API_KEY),
-        "gemini_configured": bool(GEMINI_API_KEY),
         "version": "2.0.0"
     }
 
 
 @app.post("/analyze")
 async def analyze_contract(file: UploadFile = File(...)):
+    if not CEREBRAS_API_KEY:
+        raise HTTPException(status_code=500, detail="CEREBRAS_API_KEY not configured")
     if not GROQ_API_KEY:
         raise HTTPException(status_code=500, detail="GROQ_API_KEY not configured")
-    if not GEMINI_API_KEY:
-        raise HTTPException(status_code=500, detail="GEMINI_API_KEY not configured")
     if not file.filename.lower().endswith(".pdf"):
         raise HTTPException(status_code=400, detail="Only PDF files supported")
 
